@@ -27,7 +27,7 @@ transaction.
 
 ## Git baseline and formats
 
-Go 1.24 and Git 2.43 are the minimums. Capabilities checks the native release
+Go 1.24 and Git 2.43 are the minimums. Capabilities caches a successful check of the native release
 baseline for SHA-256 and two-commit merge-tree support. Runtime errors from
 vendor builds, missing helpers or unsupported filesystems propagate to callers.
 SHA-1 and SHA-256 IDs remain full hexadecimal strings. A clone requires
@@ -48,8 +48,10 @@ compare-and-swap with a newly observed ID without revisiting the decision.
 
 By default a client has 16 ordinary command slots, 16 streaming slots and
 a 16 MiB capture limit per command. StreamConcurrency defaults to Concurrency.
-An unread stream occupies a streaming slot until completion, cancellation or
-Close. A caller can inspect metadata while consuming it, even with one slot
+A stream left unread for five minutes returns ErrStreamIdle and releases its
+resources. StreamIdleTimeout sets the interval, and a negative value disables
+it. The interval starts at open and restarts after a successful read. A caller
+waiting inside Read can wait until the operation completes or its context ends. A caller can inspect metadata while consuming it, even with one slot
 in each pool. Set a deadline on the context to bound the entire operation.
 ClientOptions.Timeout optionally caps each command, including queue time and
 stream delivery. Zero uses the caller's context alone. Structured calls fail with
@@ -94,7 +96,8 @@ To attribute pushes, enable core.logallrefupdates during provisioning and
 supply RemoteUser from the authenticated account. The fallback identity is
 "authenticated". Serve behind authenticated TLS.
 HTTP limits default to eight concurrent requests, five minutes, and 1 GiB
-in each direction. Oversized declared bodies return 413. A response failure
+in each direction. Increase the handler Timeout for slow, large clones and
+align server and proxy deadlines. Oversized declared bodies return 413. A response failure
 after headers aborts the HTTP stream. Configure socket deadlines at the
 server or proxy. A packfile can require CPU, memory and disk far beyond its
 network size. Enforce quotas outside the process.

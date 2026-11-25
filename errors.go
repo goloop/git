@@ -22,6 +22,7 @@ var (
 	ErrPathNotFound       = errors.New("path not found")
 	ErrInvalidArgument    = errors.New("invalid argument")
 	ErrConflict           = errors.New("merge conflict")
+	ErrStreamIdle         = errors.New("git stream idle timeout")
 	ErrOutputLimit        = errors.New("output limit exceeded")
 	ErrUnsafeRepository   = managed.ErrUnsafe
 	errFormat             = errors.New("malformed git output")

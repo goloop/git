@@ -96,20 +96,28 @@ func (r *Repository) Head(ctx context.Context) (HeadState, error) {
 	}
 	return HeadState{s, id}, e
 }
-func (r *Repository) refs(ctx context.Context, prefix string) ([]Ref, error) {
-	s, e := r.out(ctx, "for-each-ref", "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)", prefix)
-	if e != nil {
-		return nil, e
+
+const refFormat = "%(refname)%00%(objectname)%00%(objecttype)%00%(symref)"
+
+func (r *Repository) forEachRef(ctx context.Context, prefix, extra string, visit func(Ref, string)) error {
+	output, err := r.out(ctx, "for-each-ref", "--format="+refFormat+"%00"+extra, prefix)
+	if err != nil || output == "" {
+		return err
 	}
-	refs := []Ref{}
-	if s != "" {
-		for _, rec := range strings.Split(line(s), "\n") {
-			v := strings.Split(rec, "\x00")
-			if len(v) != 4 {
-				return nil, errFormat
-			}
-			refs = append(refs, Ref{v[0], ObjectID(v[1]), v[2], v[3]})
+	for rec := range strings.SplitSeq(line(output), "\n") {
+		fields := strings.Split(rec, "\x00")
+		if len(fields) != 5 {
+			return errFormat
 		}
+		visit(Ref{fields[0], ObjectID(fields[1]), fields[2], fields[3]}, fields[4])
+	}
+	return nil
+}
+func (r *Repository) refs(ctx context.Context, prefix string) ([]Ref, error) {
+	refs := []Ref{}
+	err := r.forEachRef(ctx, prefix, "", func(ref Ref, _ string) { refs = append(refs, ref) })
+	if err != nil {
+		return nil, err
 	}
 	return refs, nil
 }
@@ -122,15 +130,18 @@ func (r *Repository) Branches(ctx context.Context) ([]Branch, error) {
 	return r.refs(ctx, "refs/heads/")
 }
 
-// Tags lists tags without peeling annotated objects.
+// Tags lists each tag and its immediate target, including nested tags.
 func (r *Repository) Tags(ctx context.Context) ([]Tag, error) {
-	refs, e := r.refs(ctx, "refs/tags/")
-	if e != nil {
-		return nil, e
-	}
-	tags := make([]Tag, len(refs))
-	for i, ref := range refs {
-		tags[i] = Tag{Ref: ref}
+	tags := []Tag{}
+	err := r.forEachRef(ctx, "refs/tags/", "%(object)", func(ref Ref, object string) {
+		target := ref.ID
+		if ref.Type == "tag" {
+			target = ObjectID(object)
+		}
+		tags = append(tags, Tag{Ref: ref, Target: target})
+	})
+	if err != nil {
+		return nil, err
 	}
 	return tags, nil
 }

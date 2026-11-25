@@ -236,18 +236,16 @@ func (r *Repository) Blob(ctx context.Context, rev string) (io.ReadCloser, error
 	if err != nil {
 		return nil, err
 	}
-	id := info.ID
-	switch info.Type {
-	case "blob":
-	case "tag":
-		id, err = r.resolve(ctx, string(id)+"^{blob}")
+	if info.Type == "tag" {
+		info, err = r.ObjectInfo(ctx, string(info.ID)+"^{}")
 		if err != nil {
 			return nil, err
 		}
-	default:
+	}
+	if info.Type != "blob" {
 		return nil, ErrInvalidArgument
 	}
-	return r.stream(ctx, "cat-file", "blob", string(id)), nil
+	return r.stream(ctx, "cat-file", "blob", string(info.ID)), nil
 }
 
 // ReadFile reads up to limit bytes from a tree, preserving stored symlink data.

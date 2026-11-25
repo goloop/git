@@ -224,17 +224,11 @@ func TestImportedDatesAndDanglingObjects(t *testing.T) {
 }
 
 func TestConfiguredSSH(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-based SSH fixture")
-	}
 	env(t)
 	ctx, _, repo := fixture(t, "sha1")
-	dir := t.TempDir()
-	check(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte("#!/bin/sh\nexit 1\n"), 0700))
-	check(t, os.WriteFile(filepath.Join(dir, "test-ssh"), []byte("#!/bin/sh\ntouch used-ssh\nexit 1\n"), 0700))
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	check(t, repo.SetConfig(ctx, "core.sshCommand", "test-ssh"))
-	_, err := repo.LsRemote(ctx, "ssh://localhost/repo")
+	put(t, repo, "test-ssh.sh", "echo configured >used-ssh\nexit 1\n")
+	check(t, repo.SetConfig(ctx, "core.sshCommand", "sh ./test-ssh.sh"))
+	_, err := repo.LsRemote(ctx, "ssh://127.0.0.1:1/repo")
 	if err == nil {
 		t.Fatal("expected transport error")
 	}
@@ -263,5 +257,117 @@ func TestManagedReftable(t *testing.T) {
 	check(t, err)
 	if len(refs) != 1 || refs[0].Name != "refs/heads/main" {
 		t.Fatal(refs)
+	}
+}
+
+func TestIdleStreamReleasesSlot(t *testing.T) {
+	env(t)
+	ctx, _, repo := fixture(t, "sha1")
+	put(t, repo, "file", strings.Repeat("data", 1<<18))
+	check(t, repo.Add(ctx, "file"))
+	check(t, repo.Commit(ctx, "stream"))
+	c, err := New(ClientOptions{StreamConcurrency: 1, StreamIdleTimeout: 200 * time.Millisecond})
+	check(t, err)
+	repo, err = c.Open(ctx, repo.path)
+	check(t, err)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	abandoned, err := repo.Blob(ctx, "HEAD:file")
+	check(t, err)
+	defer abandoned.Close()
+	var prefix [1]byte
+	_, err = io.ReadFull(abandoned, prefix[:])
+	check(t, err)
+
+	// Keep a read pending on a second stream until the first gives up its slot.
+	next := repo.BundleCreate(ctx)
+	defer next.Close()
+	n, err := io.Copy(io.Discard, next)
+	check(t, err)
+	if n == 0 {
+		t.Fatal("empty bundle")
+	}
+	if _, err = abandoned.Read(prefix[:]); !errors.Is(err, ErrStreamIdle) {
+		t.Fatalf("idle read: %v", err)
+	}
+}
+
+func TestTagTargetsAndBlobTypes(t *testing.T) {
+	env(t)
+	ctx, _, repo := fixture(t, "sha1")
+	put(t, repo, "file", "contents")
+	check(t, repo.Add(ctx, "file"))
+	check(t, repo.Commit(ctx, "tags"))
+	for _, tag := range []struct{ name, revision, message string }{
+		{"light", "HEAD:file", ""}, {"file", "HEAD:file", "file tag"},
+		{"nested", "file", "nested tag"}, {"history", "HEAD", "commit tag"},
+	} {
+		check(t, repo.CreateTag(ctx, tag.name, tag.revision, tag.message))
+	}
+	all, err := repo.Tags(ctx)
+	check(t, err)
+	if len(all) != 4 {
+		t.Fatal(all)
+	}
+	for _, tag := range all {
+		detail, err := repo.TagInfo(ctx, strings.TrimPrefix(tag.Name, "refs/tags/"))
+		check(t, err)
+		if tag.Target == "" || tag.Target != detail.Target {
+			t.Fatalf("%s: listed %q, stored %q", tag.Name, tag.Target, detail.Target)
+		}
+	}
+	stream, err := repo.Blob(ctx, "nested")
+	check(t, err)
+	if read(t, stream) != "contents" {
+		t.Fatal("unexpected tagged blob contents")
+	}
+	for _, revision := range []string{"HEAD", "history"} {
+		if _, err = repo.Blob(ctx, revision); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("%s: %v", revision, err)
+		}
+	}
+	if _, err = repo.Blob(ctx, "missing"); !errors.Is(err, ErrObjectNotFound) {
+		t.Fatal(err)
+	}
+}
+
+func TestGetConfigKeys(t *testing.T) {
+	env(t)
+	ctx, _, repo := fixture(t, "sha1")
+	for _, key := range []string{"nosection", "core.", "core.2name", "core.na_me"} {
+		if _, _, err := repo.GetConfig(ctx, key); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("%q: %v", key, err)
+		}
+	}
+	const key = "section.sub.section.value"
+	if _, found, err := repo.GetConfig(ctx, key); found || err != nil {
+		t.Fatal(found, err)
+	}
+	check(t, repo.SetConfig(ctx, key, ""))
+	if value, found, err := repo.GetConfig(ctx, key); value != "" || !found || err != nil {
+		t.Fatal(value, found, err)
+	}
+}
+
+func TestCapabilitiesCache(t *testing.T) {
+	env(t)
+	ctx, c, _ := fixture(t, "sha1")
+	// Init has already checked the executable. A warm query needs no slot.
+	for range cap(c.slots) {
+		c.slots <- struct{}{}
+	}
+	defer func() {
+		for range cap(c.slots) {
+			<-c.slots
+		}
+	}()
+	limited, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	_, err := c.Capabilities(limited)
+	check(t, err)
+	cancel()
+	_, err = c.Capabilities(limited)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
 	}
 }

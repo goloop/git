@@ -1,10 +1,20 @@
 # Changelog
 
-## v0.1.0 (unreleased)
+## v0.2.0 (unreleased)
 
-Streaming reads now have their own concurrency limit. Commands use the
-caller's deadline unless a client timeout is set. SSH operations honor
-the configured SSH command.
+Unread streams now release their Git process and slot after five minutes.
+StreamIdleTimeout controls this interval. A pending Read can still wait for
+Git to produce data. On Windows, unattended Git runs without the parent console.
+
+Tags reports each tag's immediate target. Blob checks the resolved type of
+annotated tags. GetConfig distinguishes invalid keys, missing keys and empty
+values. Clients reuse successful capability checks.
+
+## v0.1.0 (development snapshot)
+
+Streaming reads have their own concurrency limit. The default allows 16
+ordinary Git processes plus 16 streaming processes. Commands use the caller's
+deadline unless a client timeout is set. SSH honors the configured command.
 
 Report merge conflicts, missing refs and rejected pushes through typed errors.
 Preserve annotated tag messages and handle invalid timezone offsets in imported

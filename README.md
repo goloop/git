@@ -9,12 +9,12 @@ package use only the Go standard library.
 ## Installation
 
 Go 1.24+ and native Git 2.43+ must be installed on the host. The module
-path is `github.com/goloop/git`. For the local v0.1.0 development copy, add
+path is `github.com/goloop/git`. For the local v0.2.0 development copy, add
 the module to your Go workspace with `go work use /path/to/git`.
 After the release tag is published, install with:
 
 ```sh
-go get github.com/goloop/git@v0.1.0
+go get github.com/goloop/git@v0.2.0
 ```
 
 ## Read a checkout

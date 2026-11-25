@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/goloop/git/internal/managed"
@@ -26,6 +27,9 @@ type ClientOptions struct {
 	Concurrency int
 	// StreamConcurrency limits streaming processes separately. Zero uses Concurrency.
 	StreamConcurrency int
+	// StreamIdleTimeout bounds time between reads. Zero selects five minutes.
+	// A negative value disables the idle limit. A pending Read suspends it.
+	StreamIdleTimeout time.Duration
 	// Timeout bounds each process, including queue time. Zero uses the caller context.
 	Timeout     time.Duration
 	Interactive bool
@@ -33,11 +37,12 @@ type ClientOptions struct {
 
 // Client is an immutable configuration shared by repositories.
 type Client struct {
-	exe         string
-	opts        ClientOptions
-	slots       chan struct{}
-	streamSlots chan struct{}
-	managed     bool
+	exe          string
+	opts         ClientOptions
+	slots        chan struct{}
+	streamSlots  chan struct{}
+	managed      bool
+	capabilities *atomic.Pointer[Capabilities]
 }
 
 // New locates Git. An explicit executable must be an absolute path.
@@ -68,7 +73,15 @@ func New(o ClientOptions) (*Client, error) {
 	if o.StreamConcurrency == 0 {
 		o.StreamConcurrency = o.Concurrency
 	}
-	return &Client{exe: exe, opts: o, slots: make(chan struct{}, o.Concurrency), streamSlots: make(chan struct{}, o.StreamConcurrency)}, nil
+	if o.StreamIdleTimeout == 0 {
+		o.StreamIdleTimeout = 5 * time.Minute
+	}
+	return &Client{
+		exe: exe, opts: o,
+		capabilities: new(atomic.Pointer[Capabilities]),
+		slots:        make(chan struct{}, o.Concurrency),
+		streamSlots:  make(chan struct{}, o.StreamConcurrency),
+	}, nil
 }
 
 // Version describes the native Git release.
@@ -91,8 +104,14 @@ type Capabilities struct {
 	SHA256, MergeTree bool
 }
 
-// Capabilities checks the Git 2.43 baseline used by the package.
+// Capabilities caches a successful Git baseline check for the client lifetime.
 func (c *Client) Capabilities(ctx context.Context) (Capabilities, error) {
+	if err := ctx.Err(); err != nil {
+		return Capabilities{}, err
+	}
+	if cached := c.capabilities.Load(); cached != nil {
+		return *cached, nil
+	}
 	v, e := c.Version(ctx)
 	if e != nil {
 		return Capabilities{}, e
@@ -100,7 +119,9 @@ func (c *Client) Capabilities(ctx context.Context) (Capabilities, error) {
 	if v.Major < 2 || v.Major == 2 && v.Minor < 43 {
 		return Capabilities{Version: v}, ErrUnsupportedVersion
 	}
-	return Capabilities{v, true, true}, nil
+	caps := Capabilities{v, true, true}
+	c.capabilities.Store(&caps)
+	return caps, nil
 }
 
 type bounded struct {
@@ -226,9 +247,27 @@ func (c *Client) query(ctx context.Context, dir string, input io.Reader, args ..
 type writeOnly struct{ io.Writer }
 type stream struct {
 	*io.PipeReader
-	cancel context.CancelFunc
-	done   chan struct{}
-	once   sync.Once
+	cancel   context.CancelFunc
+	done     chan struct{}
+	once     sync.Once
+	readMu   sync.Mutex
+	idle     *time.Timer
+	interval time.Duration
+}
+
+// A caller waiting inside Read is active even if Git has yet to produce data.
+func (s *stream) Read(p []byte) (int, error) {
+	if s.idle == nil {
+		return s.PipeReader.Read(p)
+	}
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
+	s.idle.Stop()
+	n, err := s.PipeReader.Read(p)
+	if err == nil {
+		s.idle.Reset(s.interval)
+	}
+	return n, err
 }
 
 func (s *stream) Close() error {
@@ -239,6 +278,13 @@ func (r *Repository) stream(ctx context.Context, args ...string) io.ReadCloser {
 	ctx, cancel := r.client.commandContext(ctx)
 	rd, wr := io.Pipe()
 	s := &stream{PipeReader: rd, cancel: cancel, done: make(chan struct{})}
+	s.interval = r.client.opts.StreamIdleTimeout
+	if s.interval > 0 {
+		s.idle = time.AfterFunc(s.interval, func() {
+			wr.CloseWithError(ErrStreamIdle)
+			cancel()
+		})
+	}
 	go func() {
 		defer close(s.done)
 		defer cancel()
@@ -246,6 +292,12 @@ func (r *Repository) stream(ctx context.Context, args ...string) io.ReadCloser {
 		defer stop()
 		e := r.client.executeIn(ctx, r.client.streamSlots, r.path, nil, wr, args...)
 		wr.CloseWithError(e)
+		if s.idle != nil {
+			// The writer is closed, so an active Read can release the mutex.
+			s.readMu.Lock()
+			s.idle.Stop()
+			s.readMu.Unlock()
+		}
 	}()
 	return s
 }

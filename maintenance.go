@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"io"
 	"path/filepath"
 	"strings"
@@ -33,11 +34,27 @@ func (r *Repository) GetConfig(ctx context.Context, key string) (string, bool, e
 	if !operand(key) {
 		return "", false, ErrInvalidArgument
 	}
-	s, e := r.out(ctx, "config", "--local", "--no-includes", "-z", "--get", "--", key)
-	if status(e, 1) {
-		return "", false, nil
+	// With a command-scope default, Git reports success for an absent key
+	// and still validates its syntax. A stored empty value has local scope.
+	output, err := r.out(ctx, "config", "--local", "--no-includes", "--show-scope", "-z", "--default", "", "--get", "--", key)
+	if status(err, 1) {
+		return "", false, errors.Join(ErrInvalidArgument, err)
 	}
-	return strings.TrimSuffix(s, "\x00"), e == nil, e
+	if err != nil {
+		return "", false, err
+	}
+	fields, err := records(output)
+	if err != nil || len(fields) != 2 {
+		return "", false, errFormat
+	}
+	switch fields[0] {
+	case "local":
+		return fields[1], true, nil
+	case "command":
+		return "", false, nil
+	default:
+		return "", false, errFormat
+	}
 }
 
 // SetConfig writes a local setting. Keys and values must be trusted.

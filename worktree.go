@@ -113,5 +113,13 @@ func (r *Repository) Merge(ctx context.Context, rev string) error {
 	if e != nil {
 		return e
 	}
-	return r.work(ctx, "merge", "--no-edit", "--no-autostash", "--no-gpg-sign", string(id))
+	err := r.work(ctx, "merge", "--no-edit", "--no-autostash", "--no-gpg-sign", string(id))
+	if status(err, 1) {
+		// A quiet diff reports whether the index contains an unmerged entry.
+		probe := r.do(ctx, "diff", "--cached", "--quiet", "--no-ext-diff", "--diff-filter=U", "--")
+		if status(probe, 1) {
+			return errors.Join(ErrConflict, err)
+		}
+	}
+	return err
 }

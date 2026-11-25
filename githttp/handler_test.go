@@ -32,8 +32,10 @@ func TestSmartHTTP(t *testing.T) {
 	t.Setenv("GIT_TERMINAL_PROMPT", "0")
 	root := t.TempDir()
 	call(t, root, true, "init", "--bare", "-b", "main", "app.git")
+	call(t, filepath.Join(root, "app.git"), true, "config", "core.logallrefupdates", "true")
 	var permit atomic.Bool
-	h, e := New(Options{Root: root, EnablePush: true, Resolve: func(ctx context.Context, id string) (string, error) { return id, nil }, Authorize: func(r *http.Request, id string, write bool) bool { return id == "app.git" && (!write || permit.Load()) }})
+	h, e := New(Options{Root: root, EnablePush: true, RemoteUser: func(*http.Request) string { return "team-member" },
+		Resolve: func(ctx context.Context, id string) (string, error) { return id, nil }, Authorize: func(r *http.Request, id string, write bool) bool { return id == "app.git" && (!write || permit.Load()) }})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -57,6 +59,9 @@ func TestSmartHTTP(t *testing.T) {
 	call(t, one, false, "push", "origin", "HEAD:main")
 	permit.Store(true)
 	call(t, one, true, "push", "origin", "HEAD:main")
+	if actor := call(t, filepath.Join(root, "app.git"), true, "reflog", "show", "-1", "--format=%gn", "refs/heads/main"); actor != "team-member" {
+		t.Fatal(actor)
+	}
 	call(t, local, true, "clone", address, "two")
 	two := filepath.Join(local, "two")
 	got, e := os.ReadFile(filepath.Join(two, "payload.bin"))

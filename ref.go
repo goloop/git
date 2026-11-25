@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
-	"strconv"
 	"strings"
-	"time"
 )
 
 // ObjectID is a full native object name in the repository's hash format.
@@ -183,19 +181,11 @@ func annotated(tag Tag, raw string) (Tag, error) {
 			if !ok {
 				return Tag{}, errFormat
 			}
-			epoch, offset, ok := strings.Cut(value[end+2:], " ")
-			if !ok {
-				return Tag{}, errFormat
+			when, err := signatureTime(value[end+2:])
+			if err != nil {
+				return Tag{}, err
 			}
-			sec, e := strconv.ParseInt(epoch, 10, 64)
-			if e != nil {
-				return Tag{}, errFormat
-			}
-			zone, e := time.Parse("-0700", offset)
-			if e != nil {
-				return Tag{}, errFormat
-			}
-			tag.Tagger = &Signature{name, email, time.Unix(sec, 0).In(zone.Location())}
+			tag.Tagger = &Signature{name, email, when}
 		}
 	}
 	if !validID(target) {
@@ -252,7 +242,7 @@ func (r *Repository) DeleteBranch(ctx context.Context, name string) error {
 	if e := r.branchName(ctx, name); e != nil {
 		return e
 	}
-	return r.do(ctx, "branch", "-d", "--", name)
+	return r.deleteRef(ctx, "refs/heads/"+name, "branch", "-d", "--", name)
 }
 
 // RenameBranch renames a branch without replacing an existing branch.
@@ -276,7 +266,7 @@ func (r *Repository) CreateTag(ctx context.Context, name, rev, message string) e
 	}
 	a := []string{"tag", "--no-sign"}
 	if message != "" {
-		a = append(a, "-m", message)
+		a = append(a, "--cleanup=verbatim", "-m", message)
 	}
 	return r.do(ctx, append(a, "--", name, string(id))...)
 }
@@ -286,5 +276,13 @@ func (r *Repository) DeleteTag(ctx context.Context, name string) error {
 	if e := r.checkRef(ctx, "refs/tags/"+name); e != nil {
 		return e
 	}
-	return r.do(ctx, "tag", "-d", "--", name)
+	return r.deleteRef(ctx, "refs/tags/"+name, "tag", "-d", "--", name)
+}
+
+func (r *Repository) deleteRef(ctx context.Context, ref string, args ...string) error {
+	err := r.do(ctx, args...)
+	if status(err, 1) && status(r.do(ctx, "show-ref", "--exists", ref), 2) {
+		return errors.Join(ErrRefNotFound, err)
+	}
+	return err
 }

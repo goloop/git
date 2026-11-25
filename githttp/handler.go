@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/goloop/git/internal/managed"
 	"github.com/goloop/git/internal/process"
@@ -23,9 +25,11 @@ import (
 // repository identifier under Root. Authorize is called on every request.
 // Both callbacks must be safe for concurrent use.
 type Options struct {
-	Root, Executable        string
-	Resolve                 func(context.Context, string) (string, error)
-	Authorize               func(*http.Request, string, bool) bool
+	Root, Executable string
+	Resolve          func(context.Context, string) (string, error)
+	Authorize        func(*http.Request, string, bool) bool
+	// RemoteUser optionally supplies the authenticated account ID for receive-pack reflogs.
+	RemoteUser              func(*http.Request) string
 	EnablePush              bool
 	MaxRequest, MaxResponse int64
 	Timeout                 time.Duration
@@ -115,6 +119,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", 403)
 		return
 	}
+	user := "authenticated"
+	if write && h.o.RemoteUser != nil {
+		user = h.o.RemoteUser(r)
+		if user == "" || strings.TrimSpace(user) != user || !utf8.ValidString(user) || strings.ContainsAny(user, "<>") || strings.IndexFunc(user, unicode.IsControl) >= 0 {
+			http.Error(w, "invalid authenticated identity", http.StatusForbidden)
+			return
+		}
+	}
 	select {
 	case h.slots <- struct{}{}:
 		defer func() { <-h.slots }()
@@ -165,9 +177,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	cmd := exec.CommandContext(ctx, h.exe, "-c", "http.receivepack="+strconv.FormatBool(write), "http-backend")
-	process.Configure(cmd)
+	process.Configure(cmd, true)
 	cmd.Dir = p
-	cmd.Env = append(managed.Env(), "REQUEST_METHOD="+r.Method, "GIT_PROJECT_ROOT="+filepath.Dir(p), "PATH_INFO=/"+filepath.Base(p)+suffix, "QUERY_STRING="+r.URL.RawQuery, "GIT_HTTP_EXPORT_ALL=1", "CONTENT_TYPE="+r.Header.Get("Content-Type"), "GIT_PROTOCOL="+proto, "REMOTE_USER=authenticated")
+	cmd.Env = append(managed.Env(),
+		"REQUEST_METHOD="+r.Method,
+		"GIT_PROJECT_ROOT="+filepath.Dir(p),
+		"PATH_INFO=/"+filepath.Base(p)+suffix,
+		"QUERY_STRING="+r.URL.RawQuery,
+		"GIT_HTTP_EXPORT_ALL=1",
+		"CONTENT_TYPE="+r.Header.Get("Content-Type"),
+		"GIT_PROTOCOL="+proto,
+		"REMOTE_USER="+user,
+	)
 	if length >= 0 {
 		cmd.Env = append(cmd.Env, "CONTENT_LENGTH="+strconv.FormatInt(length, 10))
 	}

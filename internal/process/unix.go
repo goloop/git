@@ -11,8 +11,8 @@ import (
 )
 
 // Configure assigns a process group and kills the group on context cancellation.
-func Configure(c *exec.Cmd) {
-	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+func Configure(c *exec.Cmd, detach bool) {
+	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: !detach, Setsid: detach}
 	c.Cancel = func() error {
 		e := syscall.Kill(-c.Process.Pid, syscall.SIGKILL)
 		if errors.Is(e, syscall.ESRCH) {

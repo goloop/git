@@ -3,6 +3,7 @@ package git
 import (
 	"errors"
 	"fmt"
+
 	"github.com/goloop/git/internal/managed"
 )
 
@@ -15,6 +16,8 @@ var (
 	ErrUnbornHEAD         = errors.New("unborn HEAD")
 	ErrDetachedHEAD       = errors.New("detached HEAD")
 	ErrObjectNotFound     = errors.New("object not found")
+	ErrPushRejected       = errors.New("remote ref update rejected")
+	ErrRemoteNotFound     = errors.New("remote not found")
 	ErrRefNotFound        = errors.New("reference not found")
 	ErrPathNotFound       = errors.New("path not found")
 	ErrInvalidArgument    = errors.New("invalid argument")

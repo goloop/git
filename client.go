@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-
 	"io"
 	"os"
 	"os/exec"
@@ -25,21 +24,25 @@ type ClientOptions struct {
 	Executable  string
 	MaxOutput   int64
 	Concurrency int
+	// StreamConcurrency limits streaming processes separately. Zero uses Concurrency.
+	StreamConcurrency int
+	// Timeout bounds each process, including queue time. Zero uses the caller context.
 	Timeout     time.Duration
 	Interactive bool
 }
 
 // Client is an immutable configuration shared by repositories.
 type Client struct {
-	exe     string
-	opts    ClientOptions
-	slots   chan struct{}
-	managed bool
+	exe         string
+	opts        ClientOptions
+	slots       chan struct{}
+	streamSlots chan struct{}
+	managed     bool
 }
 
 // New locates Git. An explicit executable must be an absolute path.
 func New(o ClientOptions) (*Client, error) {
-	if o.Timeout < 0 || o.MaxOutput < 0 || o.Concurrency < 0 {
+	if o.Timeout < 0 || o.MaxOutput < 0 || o.Concurrency < 0 || o.StreamConcurrency < 0 {
 		return nil, ErrInvalidArgument
 	}
 	name := o.Executable
@@ -59,13 +62,13 @@ func New(o ClientOptions) (*Client, error) {
 	if o.MaxOutput == 0 {
 		o.MaxOutput = 16 << 20
 	}
-	if o.Timeout == 0 {
-		o.Timeout = 5 * time.Minute
-	}
 	if o.Concurrency == 0 {
 		o.Concurrency = 16
 	}
-	return &Client{exe, o, make(chan struct{}, o.Concurrency), false}, nil
+	if o.StreamConcurrency == 0 {
+		o.StreamConcurrency = o.Concurrency
+	}
+	return &Client{exe: exe, opts: o, slots: make(chan struct{}, o.Concurrency), streamSlots: make(chan struct{}, o.StreamConcurrency)}, nil
 }
 
 // Version describes the native Git release.
@@ -117,20 +120,29 @@ func (c *Client) run(ctx context.Context, dir string, w io.Writer, args ...strin
 	return c.execute(ctx, dir, nil, w, args...)
 }
 func (c *Client) execute(ctx context.Context, dir string, input io.Reader, w io.Writer, args ...string) error {
+	ctx, stop := c.commandContext(ctx)
+	defer stop()
+	return c.executeIn(ctx, c.slots, dir, input, w, args...)
+}
+func (c *Client) commandContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if c.opts.Timeout > 0 {
+		return context.WithTimeout(ctx, c.opts.Timeout)
+	}
+	return context.WithCancel(ctx)
+}
+func (c *Client) executeIn(ctx context.Context, slots chan struct{}, dir string, input io.Reader, w io.Writer, args ...string) error {
 	if c.managed && !managedCommand(args[0]) {
 		return ErrUnsafeRepository
 	}
-	ctx, stop := context.WithTimeout(ctx, c.opts.Timeout)
-	defer stop()
 	select {
-	case c.slots <- struct{}{}:
-		defer func() { <-c.slots }()
+	case slots <- struct{}{}:
+		defer func() { <-slots }()
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 	base := []string{"--no-pager", "--literal-pathspecs", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "submodule.recurse=false"}
 	cmd := exec.CommandContext(ctx, c.exe, append(base, args...)...)
-	process.Configure(cmd)
+	process.Configure(cmd, !c.opts.Interactive || c.managed)
 	cmd.Stdin = input
 	cmd.Dir = dir
 	cmd.WaitDelay = time.Second
@@ -142,14 +154,19 @@ func (c *Client) execute(ctx context.Context, dir string, input io.Reader, w io.
 	}
 	cmd.Env = append(cmd.Env, "LC_ALL=C", "GIT_NO_LAZY_FETCH=1", "GIT_OPTIONAL_LOCKS=0", "GIT_CONFIG_NOSYSTEM=1")
 	if !c.opts.Interactive {
-		cmd.Env = append(cmd.Env, "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=", "SSH_ASKPASS_REQUIRE=never", "GIT_SSH_COMMAND=ssh -oBatchMode=yes")
+		cmd.Env = append(cmd.Env, "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=", "SSH_ASKPASS_REQUIRE=never")
 	}
 	if c.managed {
 		cmd.Env = managed.Env()
 	}
-	cmd.Stdout = w
 	cmd.Stderr = io.Discard
-	e := cmd.Run()
+	var e error
+	if dst, ok := w.(*io.PipeWriter); ok {
+		e = runStream(ctx, cmd, dst)
+	} else {
+		cmd.Stdout = w
+		e = cmd.Run()
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -166,6 +183,30 @@ func (c *Client) execute(ctx context.Context, dir string, input io.Reader, w io.
 	}
 	return nil
 }
+
+// Drain stdout before Wait so WaitDelay cannot truncate a slow consumer's
+// pending bytes after Git has exited. Cancellation also releases the reader.
+func runStream(ctx context.Context, cmd *exec.Cmd, dst *io.PipeWriter) error {
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	defer stdout.Close()
+	if err = cmd.Start(); err != nil {
+		return err
+	}
+	stop := context.AfterFunc(ctx, func() { stdout.Close() })
+	defer stop()
+	_, copyErr := io.Copy(dst, stdout)
+	if copyErr != nil {
+		stdout.Close()
+	}
+	if err = cmd.Wait(); err != nil {
+		return err
+	}
+	return copyErr
+}
+
 func (c *Client) output(ctx context.Context, dir string, args ...string) (string, error) {
 	return c.query(ctx, dir, nil, args...)
 }
@@ -195,7 +236,7 @@ func (s *stream) Close() error {
 	return nil
 }
 func (r *Repository) stream(ctx context.Context, args ...string) io.ReadCloser {
-	ctx, cancel := context.WithTimeout(ctx, r.client.opts.Timeout)
+	ctx, cancel := r.client.commandContext(ctx)
 	rd, wr := io.Pipe()
 	s := &stream{PipeReader: rd, cancel: cancel, done: make(chan struct{})}
 	go func() {
@@ -203,7 +244,7 @@ func (r *Repository) stream(ctx context.Context, args ...string) io.ReadCloser {
 		defer cancel()
 		stop := context.AfterFunc(ctx, func() { wr.CloseWithError(ctx.Err()) })
 		defer stop()
-		e := r.client.run(ctx, r.path, wr, args...)
+		e := r.client.executeIn(ctx, r.client.streamSlots, r.path, nil, wr, args...)
 		wr.CloseWithError(e)
 	}()
 	return s

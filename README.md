@@ -9,12 +9,12 @@ package use only the Go standard library.
 ## Installation
 
 Go 1.24+ and native Git 2.43+ must be installed on the host. The module
-path is `github.com/goloop/git`. For the local v0.0.1 development copy, add
+path is `github.com/goloop/git`. For the local v0.1.0 development copy, add
 the module to your Go workspace with `go work use /path/to/git`.
 After the release tag is published, install with:
 
 ```sh
-go get github.com/goloop/git@v0.0.1
+go get github.com/goloop/git@v0.1.0
 ```
 
 ## Read a checkout
@@ -69,7 +69,10 @@ an operation and exit status. Diagnostics omit arguments and child stderr.
 
 Mount the smart HTTP handler under a prefix. Supply a resolver for internal
 repository IDs and an authorization function for the authenticated request.
-Granting read access grants access to repository history.
+Authenticate in middleware before the handler. Send HTTP 401 with a
+WWW-Authenticate challenge when the client needs to supply credentials.
+The handler returns 403 when authorization fails. Granting read access
+grants access to repository history.
 
 ```go
 h, err := githttp.New(githttp.Options{

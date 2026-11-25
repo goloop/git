@@ -30,7 +30,7 @@ func TestConflictsAndGitlink(t *testing.T) {
 	if !errors.Is(e, ErrConflict) {
 		t.Fatal(e)
 	}
-	if e = r.Merge(ctx, "main"); e == nil {
+	if e = r.Merge(ctx, "main"); !errors.Is(e, ErrConflict) {
 		t.Fatal("merge should conflict")
 	}
 	st, e := r.Status(ctx)
@@ -89,12 +89,15 @@ func TestFailureModes(t *testing.T) {
 	if info.Size != 1<<20 {
 		t.Fatal(info)
 	}
-	b, e := r.Blob(ctx, "HEAD")
-	check(t, e)
-	_, e = io.ReadAll(b)
-	check(t, b.Close())
-	var cmd *CommandError
-	if !errors.As(e, &cmd) {
+	if _, e = r.Blob(ctx, "HEAD"); !errors.Is(e, ErrInvalidArgument) {
+		t.Fatal(e)
+	}
+	// Child failures after opening a stream must reach the reader.
+	stream := r.stream(ctx, "cat-file", "blob", "HEAD")
+	_, e = io.ReadAll(stream)
+	check(t, stream.Close())
+	var commandErr *CommandError
+	if !errors.As(e, &commandErr) {
 		t.Fatal(e)
 	}
 	limited, stop := context.WithTimeout(ctx, time.Second)
@@ -126,5 +129,139 @@ func TestFailureModes(t *testing.T) {
 		if !errors.Is(e, ErrUnsupportedVersion) {
 			t.Fatal(e)
 		}
+	}
+}
+
+func TestStreamConcurrency(t *testing.T) {
+	env(t)
+	ctx, _, repo := fixture(t, "sha1")
+	put(t, repo, "file", strings.Repeat("a", 1<<20))
+	check(t, repo.Add(ctx, "file"))
+	check(t, repo.Commit(ctx, "stream"))
+	c, err := New(ClientOptions{Concurrency: 1})
+	check(t, err)
+	repo, err = c.Open(ctx, repo.path)
+	check(t, err)
+	s, err := repo.Blob(ctx, "HEAD:file")
+	check(t, err)
+	defer s.Close()
+	var first [1]byte
+	_, err = io.ReadFull(s, first[:])
+	check(t, err)
+	limited, stop := context.WithTimeout(ctx, 3*time.Second)
+	defer stop()
+	_, err = repo.CommitInfo(limited, "HEAD")
+	check(t, err)
+	queued, err := repo.Blob(limited, "HEAD:file")
+	check(t, err)
+	check(t, queued.Close())
+	n, err := io.Copy(io.Discard, s)
+	check(t, err)
+	if n != (1<<20)-1 {
+		t.Fatal(n)
+	}
+}
+
+func TestCommandDeadline(t *testing.T) {
+	c, err := New(ClientOptions{})
+	check(t, err)
+	ctx, cancel := c.commandContext(context.Background())
+	defer cancel()
+	if _, limited := ctx.Deadline(); limited {
+		t.Fatal("unexpected default deadline")
+	}
+	c, err = New(ClientOptions{Timeout: time.Minute})
+	check(t, err)
+	ctx, cancel = c.commandContext(context.Background())
+	defer cancel()
+	if _, limited := ctx.Deadline(); !limited {
+		t.Fatal("missing explicit deadline")
+	}
+}
+
+func TestRepositoryDiagnostics(t *testing.T) {
+	env(t)
+	ctx, _, repo := fixture(t, "sha1")
+	for _, err := range []error{repo.DeleteBranch(ctx, "missing"), repo.DeleteTag(ctx, "missing")} {
+		var cmd *CommandError
+		if !errors.Is(err, ErrRefNotFound) || !errors.As(err, &cmd) {
+			t.Fatal(err)
+		}
+	}
+	_, err := repo.RemoteInfo(ctx, "missing")
+	if !errors.Is(err, ErrRemoteNotFound) {
+		t.Fatal(err)
+	}
+}
+
+func TestImportedDatesAndDanglingObjects(t *testing.T) {
+	env(t)
+	ctx, _, repo := fixture(t, "sha1")
+	put(t, repo, "file", "first")
+	check(t, repo.Add(ctx, "file"))
+	check(t, repo.Commit(ctx, "base"))
+	tree := native(t, repo.path, "rev-parse", "HEAD^{tree}")
+	raw := "tree " + tree + "\nauthor Test <t@example.invalid> 1000000000 +5960\ncommitter Test <t@example.invalid> 1000000000 -0330\n\nimported\n"
+	put(t, repo, "import", raw)
+	id := native(t, repo.path, "hash-object", "-w", "-t", "commit", "import")
+	v, err := repo.CommitInfo(ctx, id)
+	check(t, err)
+	_, authorZone := v.Author.When.Zone()
+	_, commitZone := v.Committer.When.Zone()
+	if v.Author.When.Unix() != 1000000000 || authorZone != 0 || commitZone != -12600 {
+		t.Fatal(v)
+	}
+	// Use a separate healthy repository for integrity checks.
+	_, _, healthy := fixture(t, "sha1")
+	for _, s := range []string{"first", "second", "third"} {
+		put(t, healthy, "blob", s)
+		native(t, healthy.path, "hash-object", "-w", "blob")
+	}
+	c, err := New(ClientOptions{MaxOutput: 64})
+	check(t, err)
+	healthy.client = c
+	check(t, healthy.Fsck(ctx))
+}
+
+func TestConfiguredSSH(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-based SSH fixture")
+	}
+	env(t)
+	ctx, _, repo := fixture(t, "sha1")
+	dir := t.TempDir()
+	check(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte("#!/bin/sh\nexit 1\n"), 0700))
+	check(t, os.WriteFile(filepath.Join(dir, "test-ssh"), []byte("#!/bin/sh\ntouch used-ssh\nexit 1\n"), 0700))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	check(t, repo.SetConfig(ctx, "core.sshCommand", "test-ssh"))
+	_, err := repo.LsRemote(ctx, "ssh://localhost/repo")
+	if err == nil {
+		t.Fatal("expected transport error")
+	}
+	_, err = os.Stat(filepath.Join(repo.path, "used-ssh"))
+	check(t, err)
+}
+
+func TestManagedReftable(t *testing.T) {
+	env(t)
+	ctx, c, repo := fixture(t, "sha1")
+	v, err := c.Version(ctx)
+	check(t, err)
+	if v.Major == 2 && v.Minor < 45 {
+		t.Skip("requires Git 2.45")
+	}
+	root := t.TempDir()
+	native(t, root, "init", "--bare", "--ref-format=reftable", "-b", "main", "team.git")
+	put(t, repo, "file", "reftable")
+	check(t, repo.Add(ctx, "file"))
+	check(t, repo.Commit(ctx, "first"))
+	check(t, repo.AddRemote(ctx, "origin", filepath.Join(root, "team.git")))
+	check(t, repo.Push(ctx, "origin", "main"))
+	managed, err := c.OpenManaged(ctx, root, "team.git")
+	check(t, err)
+	refs, err := managed.Branches(ctx)
+	check(t, err)
+	if len(refs) != 1 || refs[0].Name != "refs/heads/main" {
+		t.Fatal(refs)
 	}
 }

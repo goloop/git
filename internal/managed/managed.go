@@ -82,6 +82,7 @@ func Path(ctx context.Context, root, id string) (string, error) {
 	scan := bufio.NewScanner(strings.NewReader(string(b)))
 	section := ""
 	bare := false
+	reftable := false
 	for scan.Scan() {
 		s := strings.Trim(scan.Text(), " \t\r")
 		if s == "" || s[0] == '#' || s[0] == ';' {
@@ -111,6 +112,11 @@ func Path(ctx context.Context, root, id string) (string, error) {
 			if v != "0" && v != "1" {
 				return "", ErrUnsafe
 			}
+		case "[extensions]refstorage":
+			reftable = v == "reftable"
+			if v != "files" && v != "reftable" {
+				return "", ErrUnsafe
+			}
 		case "[extensions]objectformat":
 			if v != "sha256" && v != "sha1" {
 				return "", ErrUnsafe
@@ -121,6 +127,12 @@ func Path(ctx context.Context, root, id string) (string, error) {
 	}
 	if !bare || scan.Err() != nil {
 		return "", ErrUnsafe
+	}
+	if reftable {
+		info, err := os.Lstat(filepath.Join(p, "reftable"))
+		if err != nil || !info.IsDir() {
+			return "", ErrUnsafe
+		}
 	}
 	return p, nil
 }

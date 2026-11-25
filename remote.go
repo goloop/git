@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"strings"
 )
@@ -45,7 +46,11 @@ func (r *Repository) RemoveRemote(ctx context.Context, name string) error {
 	if !remoteName(name) {
 		return ErrInvalidArgument
 	}
-	return r.do(ctx, "remote", "remove", name)
+	err := r.do(ctx, "remote", "remove", name)
+	if status(err, 2) {
+		return errors.Join(ErrRemoteNotFound, err)
+	}
+	return err
 }
 
 // RemoteInfo looks up the configured fetch URL, omitting URL userinfo and query.
@@ -54,6 +59,9 @@ func (r *Repository) RemoteInfo(ctx context.Context, name string) (Remote, error
 		return Remote{}, ErrInvalidArgument
 	}
 	s, e := r.out(ctx, "remote", "get-url", name)
+	if status(e, 2) {
+		return Remote{}, errors.Join(ErrRemoteNotFound, e)
+	}
 	if e != nil {
 		return Remote{}, e
 	}
@@ -91,10 +99,25 @@ func (r *Repository) Push(ctx context.Context, name, branch string) error {
 		return e
 	}
 	ref := "refs/heads/" + branch
-	return r.do(ctx, "push", "--no-force", "--no-follow-tags", "--recurse-submodules=no", name, ref+":"+ref)
+	var result bounded
+	result.max = r.client.opts.MaxOutput
+	err := r.client.run(ctx, r.path, &writeOnly{&result}, "push", "--porcelain", "--no-force", "--no-follow-tags", "--recurse-submodules=no", name, ref+":"+ref)
+	if result.overflow {
+		return ErrOutputLimit
+	}
+	if status(err, 1) {
+		for row := range strings.SplitSeq(result.String(), "\n") {
+			flag, rest, _ := strings.Cut(row, "\t")
+			pair, summary, _ := strings.Cut(rest, "\t")
+			if flag == "!" && pair == ref+":"+ref && (strings.HasPrefix(summary, "[rejected]") || strings.HasPrefix(summary, "[remote rejected]")) {
+				return errors.Join(ErrPushRejected, err)
+			}
+		}
+	}
+	return err
 }
 
-// Pull fetches a named branch and permits only a fast-forward.
+// Pull fast-forwards the current checkout from the named remote branch.
 func (r *Repository) Pull(ctx context.Context, name, branch string) error {
 	if _, e := r.RemoteInfo(ctx, name); e != nil {
 		return e

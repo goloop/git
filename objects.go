@@ -33,7 +33,35 @@ type LogOptions struct {
 	Topological bool
 }
 
-const commitFormat = "%H%x00%T%x00%P%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%s%x00%B"
+const commitFormat = "%H%x00%T%x00%P%x00%an%x00%ae%x00%ad%x00%cn%x00%ce%x00%cd%x00%s%x00%B"
+
+// Git's raw date format preserves the epoch even for old invalid offsets.
+func signatureTime(raw string) (time.Time, error) {
+	epoch, offset, ok := strings.Cut(raw, " ")
+	seconds, err := number(epoch)
+	if !ok || err != nil {
+		return time.Time{}, errFormat
+	}
+	instant := time.Unix(seconds, 0).UTC()
+	if len(offset) != 5 || (offset[0] != '+' && offset[0] != '-') {
+		return instant, nil
+	}
+	for _, digit := range offset[1:] {
+		if digit < '0' || digit > '9' {
+			return instant, nil
+		}
+	}
+	hours, _ := strconv.Atoi(offset[1:3])
+	minutes, _ := strconv.Atoi(offset[3:])
+	if hours >= 24 || minutes >= 60 {
+		return instant, nil
+	}
+	shift := (hours*60 + minutes) * 60
+	if offset[0] == '-' {
+		shift = -shift
+	}
+	return instant.In(time.FixedZone("", shift)), nil
+}
 
 func parseCommits(s string) ([]Commit, error) {
 	fields, e := records(s)
@@ -44,11 +72,11 @@ func parseCommits(s string) ([]Commit, error) {
 	for len(fields) > 0 {
 		f := fields[:11]
 		fields = fields[11:]
-		a, e := time.Parse(time.RFC3339, f[5])
+		a, e := signatureTime(f[5])
 		if e != nil {
 			return nil, errFormat
 		}
-		c, e := time.Parse(time.RFC3339, f[8])
+		c, e := signatureTime(f[8])
 		if e != nil {
 			return nil, errFormat
 		}
@@ -76,7 +104,7 @@ func (r *Repository) Log(ctx context.Context, o LogOptions) ([]Commit, error) {
 	if e != nil {
 		return nil, e
 	}
-	a := []string{"log", "--no-notes", "--no-show-signature", "--encoding=none", "-z", "--format=" + commitFormat, "-n", itoa(o.Limit)}
+	a := []string{"log", "--no-notes", "--no-show-signature", "--encoding=none", "--date=raw", "-z", "--format=" + commitFormat, "-n", itoa(o.Limit)}
 	if o.Topological {
 		a = append(a, "--topo-order")
 	}
@@ -188,6 +216,9 @@ func (r *Repository) ObjectInfo(ctx context.Context, rev string) (ObjectInfo, er
 	if row == rev+" missing" {
 		return ObjectInfo{}, ErrObjectNotFound
 	}
+	if row == rev+" ambiguous" {
+		return ObjectInfo{}, ErrInvalidArgument
+	}
 	f := strings.Split(row, " ")
 	if len(f) != 3 || !validID(ObjectID(f[0])) {
 		return ObjectInfo{}, errFormat
@@ -201,9 +232,20 @@ func (r *Repository) ObjectInfo(ctx context.Context, rev string) (ObjectInfo, er
 
 // Blob opens an object stream. Read to EOF for process errors; always Close.
 func (r *Repository) Blob(ctx context.Context, rev string) (io.ReadCloser, error) {
-	id, e := r.Resolve(ctx, rev)
-	if e != nil {
-		return nil, e
+	info, err := r.ObjectInfo(ctx, rev)
+	if err != nil {
+		return nil, err
+	}
+	id := info.ID
+	switch info.Type {
+	case "blob":
+	case "tag":
+		id, err = r.resolve(ctx, string(id)+"^{blob}")
+		if err != nil {
+			return nil, err
+		}
+	default:
+		return nil, ErrInvalidArgument
 	}
 	return r.stream(ctx, "cat-file", "blob", string(id)), nil
 }

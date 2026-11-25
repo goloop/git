@@ -131,12 +131,12 @@ func TestSnapshots(t *testing.T) {
 					t.Fatal(b)
 				}
 			}
-			for _, m := range []string{"", "annotated"} {
-				name := "tag" + m
+			for _, m := range []string{"", "#42 release\nbody  \n"} {
+				name := "release"
 				check(t, r.CreateTag(ctx, name, "HEAD", m))
 				v, e := r.TagInfo(ctx, name)
 				check(t, e)
-				if m != "" && (v.Tagger == nil || v.Tagger.Name != "Test" || v.Message != m+"\n" || v.Target == v.ID) {
+				if m != "" && (v.Tagger == nil || v.Tagger.Name != "Test" || v.Message != m || v.Target == v.ID) {
 					t.Fatal(v)
 				}
 				if (v.Type == "tag") != (m != "") {
@@ -235,6 +235,9 @@ func TestSynchronization(t *testing.T) {
 	check(t, r.Commit(ctx, "update"))
 	check(t, r.Push(ctx, "origin", "main"))
 	check(t, cloned.Fetch(ctx, "origin"))
+	if err := cloned.Push(ctx, "origin", "main"); !errors.Is(err, ErrPushRejected) {
+		t.Fatal(err)
+	}
 	check(t, cloned.Pull(ctx, "origin", "main"))
 	check(t, cloned.RemoveRemote(ctx, "origin"))
 	managed, e := c.OpenManaged(ctx, root, "team.git")

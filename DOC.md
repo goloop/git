@@ -34,7 +34,8 @@ SHA-1 and SHA-256 IDs remain full hexadecimal strings. A clone requires
 compatible object formats at the transport endpoints.
 
 Log defaults to 100 entries ending at HEAD. Since selects the excluded side
-of a two-dot range. Commit timestamps retain the recorded offset. Paths are
+of a two-dot range. Commit timestamps retain valid recorded offsets. An invalid offset in imported
+history yields the original instant in UTC. Paths are
 literal slash-separated names. Tree and change results preserve raw bytes in
 Go strings, including tabs, newlines and non-UTF-8 bytes. JSON consumers must
 encode raw path bytes explicitly to preserve invalid UTF-8. ReadFile returns
@@ -45,9 +46,13 @@ compare-and-swap with a newly observed ID without revisiting the decision.
 
 ## Resource use and errors
 
-A zero-valued client configuration allows 16 concurrent child processes,
-16 MiB captured stdout per command and five minutes per command. Contexts can
-shorten deadlines across multi-command operations. Structured calls fail with
+By default a client has 16 ordinary command slots, 16 streaming slots and
+a 16 MiB capture limit per command. StreamConcurrency defaults to Concurrency.
+An unread stream occupies a streaming slot until completion, cancellation or
+Close. A caller can inspect metadata while consuming it, even with one slot
+in each pool. Set a deadline on the context to bound the entire operation.
+ClientOptions.Timeout optionally caps each command, including queue time and
+stream delivery. Zero uses the caller's context alone. Structured calls fail with
 ErrOutputLimit on overflow. Blob, Diff, Blame, Archive and BundleCreate stream
 without that capture limit. Always close streams, even after reading to EOF.
 An error while reading invalidates partial output. Stage backup files under a
@@ -56,7 +61,12 @@ temporary name and publish them only after a successful copy.
 Blank repository paths, option-like revision operands and traversal paths
 are rejected. A missing HEAD on an empty branch returns its symbolic name
 with ErrUnbornHEAD. A detached HEAD returns a commit ID and empty branch.
-Git errors expose the operation and exit status; child diagnostics are
+Merge reports ErrConflict when the index contains unmerged entries after a
+failed merge. A missing branch or tag on deletion yields ErrRefNotFound.
+RemoteInfo reports ErrRemoteNotFound for a missing remote. Push reports
+ErrPushRejected when Git identifies a rejected ref update. These errors
+also retain the CommandError for inspection. Other transport failures expose
+the Git operation and exit status; child diagnostics are
 discarded because they can contain credentials or object data.
 
 ## Managed repositories
@@ -67,7 +77,8 @@ general config access require the trusted repository API. OpenManaged and
 githttp accept administrator-created bare repositories under a canonical
 absolute root. IDs consist of slash-separated ASCII names ending in .git.
 The restricted config grammar accepts the basic bare layout and object
-format emitted by git init. Includes, alternate stores, linked worktrees,
+format emitted by git init, including files and reftable refs on supporting
+Git versions. Run the service as the repository owner. Includes, alternate stores, linked worktrees,
 partial-clone configs, helper settings and unknown extensions are rejected.
 Keep metadata and directory ownership trusted throughout each handle's
 lifetime. Filesystem checks alone cannot prevent concurrent replacement.
@@ -75,7 +86,13 @@ lifetime. Filesystem checks alone cannot prevent concurrent replacement.
 githttp authorizes the URL identifier before invoking its resolver. Keep its
 mapping stable for the authorization decision. Callbacks must respect the
 request context. The default is read-only. Writes require EnablePush and
-write authorization on discovery and RPC. Serve behind authenticated TLS.
+write authorization on discovery and RPC. Authenticate in middleware before
+the handler. Return HTTP 401 with WWW-Authenticate when credentials are
+needed. A denied authorization returns 403. The managed backend rejects ref
+deletions and non-fast-forward branch updates and disables repository hooks.
+To attribute pushes, enable core.logallrefupdates during provisioning and
+supply RemoteUser from the authenticated account. The fallback identity is
+"authenticated". Serve behind authenticated TLS.
 HTTP limits default to eight concurrent requests, five minutes, and 1 GiB
 in each direction. Oversized declared bodies return 413. A response failure
 after headers aborts the HTTP stream. Configure socket deadlines at the
@@ -84,7 +101,9 @@ network size. Enforce quotas outside the process.
 
 The trusted client scrubs inherited GIT_* variables, disables system config
 and uses the local user's global and repository configuration. Prompts are
-disabled by default. Configure identities and credentials outside the library.
+disabled for Git by default. SSH uses the trusted core.sshCommand or the
+host SSH configuration. Configure BatchMode for unattended SSH clients.
+Pull fast-forwards the current checkout from the requested remote branch.
 The managed environment also removes global config, disables hooks, external
 transports, lazy fetches and automatic maintenance. Worker isolation remains
 necessary when processing hostile objects.

@@ -57,7 +57,9 @@ func (r *Repository) UnsetConfig(ctx context.Context, key string) error {
 }
 
 // Fsck checks object connectivity and integrity.
-func (r *Repository) Fsck(ctx context.Context) error { return r.do(ctx, "fsck", "--full", "--strict") }
+func (r *Repository) Fsck(ctx context.Context) error {
+	return r.client.run(ctx, r.path, io.Discard, "fsck", "--full", "--strict", "--no-dangling", "--no-progress")
+}
 
 // GC repacks the repository while retaining unreachable objects.
 func (r *Repository) GC(ctx context.Context) error { return r.do(ctx, "gc", "--no-prune") }

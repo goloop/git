@@ -20,7 +20,7 @@ func main() {
 	if password == "" {
 		log.Fatal("set REPO_PASSWORD")
 	}
-	client, e := git.New(git.ClientOptions{})
+	client, e := git.New(git.ClientOptions{Timeout: 5 * time.Minute})
 	if e != nil {
 		log.Fatal(e)
 	}

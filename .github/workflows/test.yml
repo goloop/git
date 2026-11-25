@@ -1,0 +1,45 @@
+name: Go and native Git
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        go: ['1.24.x', stable]
+    runs-on: ${{ matrix.os }}
+    env:
+      GOWORK: 'off'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: false
+      - run: git version
+      - run: go test -race ./...
+      - run: go vet ./...
+      - shell: bash
+        run: test -z "$(gofmt -l .)"
+  minimum-git:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache: false
+      - uses: actions/checkout@v4
+        with:
+          repository: git/git
+          ref: v2.43.0
+          path: native-src
+          persist-credentials: false
+      - name: Build minimum native Git with smart HTTP
+        run: |
+          mv native-src "$RUNNER_TEMP/native-src"
+          make -C "$RUNNER_TEMP/native-src" -j2 prefix="$RUNNER_TEMP/native" NO_GETTEXT=YesPlease NO_TCLTK=YesPlease install
+          echo "$RUNNER_TEMP/native/bin" >> "$GITHUB_PATH"
+      - run: git version && GOWORK=off go test ./...

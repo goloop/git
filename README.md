@@ -1,20 +1,19 @@
-# git
+[![deps.dev](https://img.shields.io/badge/deps.dev-insights-4c8dbc)](https://deps.dev/go/github.com%2Fgoloop%2Fgit) [![Go Reference](https://img.shields.io/badge/godoc-reference-blue)](https://pkg.go.dev/github.com/goloop/git) [![License](https://img.shields.io/badge/license-MIT-brightgreen)](https://github.com/goloop/git/blob/v0/LICENSE) [![Stay with Ukraine](https://img.shields.io/static/v1?label=Stay%20with&message=Ukraine%20♥&color=ffD700&labelColor=0057B8&style=flat)](https://u24.gov.ua/)
 
-[Українська](README.UK.md) · [Operation reference](DOC.md) · [Changelog](CHANGELOG.md)
+# git
 
 Use native Git from Go to inspect a checkout, manage a bare repository, or
 serve authorized smart HTTP requests. The core and the optional `githttp`
 package use only the Go standard library.
 
+[Українська](README.UK.md) · [Operation reference](DOC.md) · [Changelog](CHANGELOG.md)
+
 ## Installation
 
-Go 1.24+ and native Git 2.43+ must be installed on the host. The module
-path is `github.com/goloop/git`. For the local v0.2.0 development copy, add
-the module to your Go workspace with `go work use /path/to/git`.
-After the release tag is published, install with:
+Requires Go 1.24+ and Git 2.43+.
 
 ```sh
-go get github.com/goloop/git@v0.2.0
+go get github.com/goloop/git@v0.2.1
 ```
 
 ## Read a checkout

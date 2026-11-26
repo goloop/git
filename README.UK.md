@@ -1,17 +1,21 @@
-# git
+[![deps.dev](https://img.shields.io/badge/deps.dev-insights-4c8dbc)](https://deps.dev/go/github.com%2Fgoloop%2Fgit) [![Go Reference](https://img.shields.io/badge/godoc-reference-blue)](https://pkg.go.dev/github.com/goloop/git) [![License](https://img.shields.io/badge/license-MIT-brightgreen)](https://github.com/goloop/git/blob/v0/LICENSE) [![Stay with Ukraine](https://img.shields.io/static/v1?label=Stay%20with&message=Ukraine%20♥&color=ffD700&labelColor=0057B8&style=flat)](https://u24.gov.ua/)
 
-[English](README.md) · [Довідник операцій](DOC.UK.md) · [Історія змін](CHANGELOG.md)
+# git
 
 Модуль запускає встановлений Git для роботи з локальними робочими копіями й
 bare-репозиторіями. Окремий пакет `githttp` дозволяє клонування, отримання й
 надсилання змін через smart HTTP. Обидва пакети використовують стандартну
 бібліотеку Go.
 
+[English](README.md) · [Довідник операцій](DOC.UK.md) · [Історія змін](CHANGELOG.md)
+
 ## Встановлення
 
-Потрібні Go 1.24+ і Git 2.43+. Для локальної версії додайте модуль у робочий
-простір командою `go work use /шлях/до/git`. Після публікації тегу командою
-встановлення буде `go get github.com/goloop/git@v0.2.0`.
+Потрібні Go 1.24+ і Git 2.43+.
+
+```sh
+go get github.com/goloop/git@v0.2.1
+```
 
 ## Читання робочої копії
 

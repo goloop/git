@@ -1,6 +1,10 @@
 # Changelog
 
-## v0.2.0 (unreleased)
+## v0.2.1 - 2026-11-26
+
+Add package badges to both READMEs and publish the contribution guide and code of conduct.
+
+## v0.2.0 (development snapshot)
 
 Unread streams now release their Git process and slot after five minutes.
 StreamIdleTimeout controls this interval. A pending Read can still wait for

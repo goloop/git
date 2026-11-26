@@ -8,6 +8,8 @@ package use only the Go standard library.
 
 [Українська](README.UK.md) · [Operation reference](DOC.md) · [Changelog](CHANGELOG.md)
 
+The HTTP timeout is set by `githttp.Options.Timeout`. The integration test clones, pushes and fetches through a reverse proxy as well as directly. Set proxy timeouts and buffering to suit your repository sizes.
+
 ## Installation
 
 Requires Go 1.24+ and Git 2.43+.

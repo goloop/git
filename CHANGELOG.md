@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.2.2 - 2026-11-26
+
+Cover clone, fetch and push through a reverse proxy.
+
 ## v0.2.1 - 2026-11-26
 
 Add package badges to both READMEs and publish the contribution guide and code of conduct.

@@ -6,6 +6,8 @@ import (
 	"crypto/rand"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,6 +27,12 @@ func call(t *testing.T, dir string, wantOK bool, args ...string) string {
 	return strings.TrimSpace(string(b))
 }
 func TestSmartHTTP(t *testing.T) {
+	t.Run("direct", func(t *testing.T) { testSmartHTTP(t, false) })
+	t.Run("reverse proxy", func(t *testing.T) { testSmartHTTP(t, true) })
+}
+
+func testSmartHTTP(t *testing.T, proxied bool) {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", home)
@@ -42,7 +50,17 @@ func TestSmartHTTP(t *testing.T) {
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 	local := t.TempDir()
-	address := srv.URL + "/app.git"
+	endpoint := srv.URL
+	if proxied {
+		target, err := url.Parse(endpoint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		proxy := httptest.NewServer(httputil.NewSingleHostReverseProxy(target))
+		defer proxy.Close()
+		endpoint = proxy.URL
+	}
+	address := endpoint + "/app.git"
 	call(t, local, true, "clone", address, "one")
 	one := filepath.Join(local, "one")
 	call(t, one, true, "config", "user.name", "Tester")
